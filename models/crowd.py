@@ -26,15 +26,18 @@ class Crowd:
         positions = []
         diameter = RADIUS * 2 + 0.3  # 歩行者間の最小間隔
 
-        # 開始線に沿った列と奥行き方向の行で格子配置
-        cols = max(1, int(self.start_line.length / diameter))
+        # 開始線に沿った列と奥行き方向の行で格子配置（線の中央に寄せる）
+        max_cols = max(1, int(self.start_line.length / diameter))
+        cols = min(count, max_cols)
         rows = (count + cols - 1) // cols
+        col_spacing = self.start_line.length / max_cols
+        start_offset = (self.start_line.length - cols * col_spacing) / 2
 
         for i in range(count):
             row = i // cols
             col = i % cols
             along = self.start_line.origin + self.start_line.direction * (
-                (col + 0.5) * self.start_line.length / cols
+                start_offset + (col + 0.5) * col_spacing
             )
             offset = back_normal * (diameter * (row + 1))
             pos = along + offset
