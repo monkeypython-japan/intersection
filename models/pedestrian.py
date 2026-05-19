@@ -8,12 +8,16 @@ SCAN_ANGLE = np.radians(45)   # 前方走査扇形の半角 [rad]
 SECTOR_COUNT = 3
 DECEL_DISTANCE = 2.0    # 減速を開始する距離 [m]
 ACCEL_RATE = 0.1        # 回復加速度 [m/s²]
-MAX_TURN = np.radians(22.5)   # 1ステップあたりの最大回転角 [rad]
+MAX_TURN = np.radians(30)       # 1ステップあたりの最大回転角 [rad]
 ESCAPE_ANGLE = np.radians(100)  # 脱出回避角（直角 + 10° 後退）
 ESCAPE_SPEED_RATIO = 0.5        # 脱出速度割合
 STUCK_SPEED = 0.05              # これ以下の速度を「停止」とみなす [m/s]
 STUCK_ESCAPE_STEPS = 5          # 停止がこのステップ数続いたら脱出（0.5秒）
 ENDPOINT_INNER_MARGIN = 1.0     # 延長ゾーンでセグメント内側を目指すマージン [m]
+PLAN_SECTORS = 7                # 方向計画のセクター数
+PLAN_HALF_ANGLE = np.radians(60)  # ゴール方向基準で ±60° をスキャン [rad]
+PLAN_DIST = 5.0                 # 方向計画の先読み距離 [m]
+GOAL_ALIGN_WEIGHT = 2.0         # ゴール整合性スコアの重み（混雑ペナルティとのバランス）
 
 
 def _rotate(vec: np.ndarray, angle: float) -> np.ndarray:
@@ -115,14 +119,8 @@ class Pedestrian:
                 self._stuck_steps = 0
                 return
 
-        # 前方扇形を3セクターに分割してカウント → 方向調整
-        sector_weights = self._scan_sectors(direction, nearby)
-        if sector_weights.max() < 1e-9:
-            turn_angle = 0.0
-        else:
-            best_sector = np.argmin(sector_weights)
-            turn_angle = (best_sector - 1) * (SCAN_ANGLE / SECTOR_COUNT)
-            turn_angle = np.clip(turn_angle, -MAX_TURN, MAX_TURN)
+        # 前方の歩行者分布から最も空いている方向を選択
+        turn_angle = self._plan_heading(direction, nearby)
         new_dir = _rotate(direction, turn_angle)
 
         # 速度調整（方向修正と同時適用）
@@ -138,10 +136,47 @@ class Pedestrian:
             else:
                 new_speed = target_speed
             goal_dir = self._goal_dir_with_margin()
-            blended = new_dir * 0.95 + goal_dir * 0.05
+            blended = new_dir * 0.9 + goal_dir * 0.1
             norm = np.linalg.norm(blended)
             new_dir = blended / norm if norm > 1e-6 else new_dir
             self.velocity = new_dir * new_speed
+
+    def _plan_heading(self, forward: np.ndarray, nearby: list) -> float:
+        """ゴール方向を中心に ±PLAN_HALF_ANGLE をスキャン。
+        スコア = ゴール整合性（cos）- 混雑ペナルティ で最良セクターを選び、現在方向からのターン角を返す。"""
+        goal_dir = self._goal_dir_with_margin()
+        goal_angle = np.arctan2(goal_dir[1], goal_dir[0])
+        fwd_angle  = np.arctan2(forward[1],  forward[0])
+
+        sector_width   = 2 * PLAN_HALF_ANGLE / PLAN_SECTORS
+        sector_offsets = [-PLAN_HALF_ANGLE + (i + 0.5) * sector_width
+                          for i in range(PLAN_SECTORS)]
+
+        # ゴール方向(offset=0)が最高、±60°端が最低のベーススコア
+        scores = np.array([GOAL_ALIGN_WEIGHT * np.cos(c) for c in sector_offsets])
+
+        for p in nearby:
+            diff = p.position - self.position
+            dist = np.linalg.norm(diff)
+            if dist < 1e-6 or dist > PLAN_DIST:
+                continue
+            angle_to = np.arctan2(diff[1], diff[0]) - goal_angle
+            angle_to = (angle_to + np.pi) % (2 * np.pi) - np.pi
+            if abs(angle_to) > PLAN_HALF_ANGLE:
+                continue
+            p_vel_norm = p.velocity / (np.linalg.norm(p.velocity) + 1e-6)
+            dot = float(np.dot(forward, p_vel_norm))
+            w = (1.0 / (dist + 1e-3)) * (1.0 - dot * 0.5)
+            for i, c in enumerate(sector_offsets):
+                if abs(angle_to - c) <= sector_width / 2:
+                    scores[i] -= w
+                    break
+
+        best = int(np.argmax(scores))
+        target_angle = goal_angle + sector_offsets[best]
+        turn = target_angle - fwd_angle
+        turn = (turn + np.pi) % (2 * np.pi) - np.pi
+        return float(np.clip(turn, -MAX_TURN, MAX_TURN))
 
     def _goal_dir_with_margin(self) -> np.ndarray:
         """延長ゾーンにいる場合は端点の ENDPOINT_INNER_MARGIN m 内側を目指す。
@@ -169,34 +204,6 @@ class Pedestrian:
             )
 
         return left if dot_score(left) < dot_score(right) else right
-
-    def _scan_sectors(self, forward: np.ndarray, nearby: list) -> np.ndarray:
-        """左・中・右の3セクターの重み付きカウントを返す"""
-        weights = np.zeros(SECTOR_COUNT)
-        sector_half = SCAN_ANGLE / SECTOR_COUNT
-        sector_centers = [(i - 1) * sector_half for i in range(SECTOR_COUNT)]
-
-        for p in nearby:
-            diff = p.position - self.position
-            dist = np.linalg.norm(diff)
-            if dist < 1e-6 or dist > DECEL_DISTANCE * 2:
-                continue
-
-            angle_to = np.arctan2(diff[1], diff[0]) - np.arctan2(forward[1], forward[0])
-            angle_to = (angle_to + np.pi) % (2 * np.pi) - np.pi
-
-            if abs(angle_to) > SCAN_ANGLE:
-                continue
-
-            dot = float(np.dot(forward, p.velocity / (np.linalg.norm(p.velocity) + 1e-6)))
-            weight = 1.0 / (dist + 1e-3) * (1.0 - dot * 0.5)
-
-            for i, center in enumerate(sector_centers):
-                if abs(angle_to - center) <= sector_half:
-                    weights[i] += weight
-                    break
-
-        return weights
 
     def _collision_speed(self, nearby: list, direction: np.ndarray) -> float:
         """前方の最近接距離に基づく目標速度を返す。
