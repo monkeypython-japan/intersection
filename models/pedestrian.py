@@ -1,0 +1,181 @@
+import numpy as np
+from .boundary import Boundary
+
+RADIUS = 0.5            # 歩行者の占有半径 [m]
+BASE_SPEED = 1.0        # 基本速度 [m/s]
+SPEED_VARIATION = 0.2   # 速度ばらつき割合
+SCAN_ANGLE = np.radians(45)   # 前方走査扇形の半角 [rad]
+SECTOR_COUNT = 3
+DECEL_DISTANCE = 2.0    # 減速を開始する距離 [m]
+ACCEL_RATE = 0.1        # 回復加速度 [m/s²]
+MAX_TURN = np.radians(22.5)   # 1ステップあたりの最大回転角 [rad]
+ESCAPE_ANGLE = np.radians(100)  # 脱出回避角（直角 + 10° 後退）
+ESCAPE_SPEED_RATIO = 0.5        # 脱出速度割合
+STUCK_SPEED = 0.05              # これ以下の速度を「停止」とみなす [m/s]
+STUCK_ESCAPE_STEPS = 5          # 停止がこのステップ数続いたら脱出（0.5秒）
+
+
+def _rotate(vec: np.ndarray, angle: float) -> np.ndarray:
+    c, s = np.cos(angle), np.sin(angle)
+    return np.array([c * vec[0] - s * vec[1], s * vec[0] + c * vec[1]])
+
+
+class Pedestrian:
+    def __init__(self, position: np.ndarray, goal_line: Boundary):
+        self.position = np.array(position, dtype=float)
+        self.goal_line = goal_line
+        self.radius = RADIUS
+        self.base_speed = BASE_SPEED * (1.0 + np.random.uniform(-SPEED_VARIATION, SPEED_VARIATION))
+        self.reached_goal = False
+        self._prev_position = self.position.copy()
+        self._stuck_steps = 0  # 低速が続いたステップ数
+
+        goal_dir = goal_line.goal_direction(self.position)
+        self.velocity = goal_dir * self.base_speed
+
+    def update(self, dt: float, neighbors: list) -> None:
+        if self.reached_goal:
+            return
+
+        self._prev_position = self.position.copy()
+        nearby = [p for p in neighbors if p is not self and not p.reached_goal]
+
+        self._adjust_velocity(nearby, dt)
+
+        # 低速カウンター更新
+        if np.linalg.norm(self.velocity) < STUCK_SPEED:
+            self._stuck_steps += 1
+        else:
+            self._stuck_steps = 0
+
+        new_pos = self.position + self.velocity * dt
+
+        if self.goal_line.crossed_by(self._prev_position, new_pos):
+            self.reached_goal = True
+            self.velocity = np.zeros(2)
+            self.position = new_pos
+            return
+
+        self.position = new_pos
+
+    def _adjust_velocity(self, nearby: list, dt: float) -> None:
+        speed = np.linalg.norm(self.velocity)
+        if speed < 1e-6:
+            direction = self.goal_line.goal_direction(self.position)
+        else:
+            direction = self.velocity / speed
+
+        # 一定時間停止が続いた場合: ゴール方向を基準に垂直回避
+        if self._stuck_steps >= STUCK_ESCAPE_STEPS:
+            goal_dir = self.goal_line.goal_direction(self.position)
+            blockers = [
+                p for p in nearby
+                if (np.linalg.norm(p.position - self.position) - self.radius - p.radius)
+                   < DECEL_DISTANCE
+                and np.dot(
+                    (p.position - self.position)
+                    / (np.linalg.norm(p.position - self.position) + 1e-6),
+                    goal_dir
+                ) > 0.3
+            ]
+            if blockers:
+                escape_dir = self._perpendicular_escape(goal_dir, blockers)
+                self.velocity = escape_dir * self.base_speed * ESCAPE_SPEED_RATIO
+                self._stuck_steps = 0
+                return
+
+        # 前方扇形を3セクターに分割してカウント → 方向調整
+        sector_weights = self._scan_sectors(direction, nearby)
+        if sector_weights.max() < 1e-9:
+            turn_angle = 0.0
+        else:
+            best_sector = np.argmin(sector_weights)
+            turn_angle = (best_sector - 1) * (SCAN_ANGLE / SECTOR_COUNT)
+            turn_angle = np.clip(turn_angle, -MAX_TURN, MAX_TURN)
+        new_dir = _rotate(direction, turn_angle)
+
+        # 速度調整（方向修正と同時適用）
+        target_speed = self._collision_speed(nearby, new_dir)
+
+        if target_speed < 1e-6:
+            # 実際の重なり → 停止（stuck カウンターが進む）
+            self.velocity = np.zeros(2)
+        else:
+            # 加速は緩やか、減速は即時
+            if target_speed > speed:
+                new_speed = min(speed + ACCEL_RATE * dt, target_speed)
+            else:
+                new_speed = target_speed
+            goal_dir = self.goal_line.goal_direction(self.position)
+            blended = new_dir * 0.95 + goal_dir * 0.05
+            norm = np.linalg.norm(blended)
+            new_dir = blended / norm if norm > 1e-6 else new_dir
+            self.velocity = new_dir * new_speed
+
+    def _perpendicular_escape(self, forward: np.ndarray, blockers: list) -> np.ndarray:
+        """前進方向の直角＋やや後退のうち、相手速度との内積が小さい側へ逃げる"""
+        left = _rotate(forward, ESCAPE_ANGLE)
+        right = _rotate(forward, -ESCAPE_ANGLE)
+
+        def dot_score(d: np.ndarray) -> float:
+            return sum(
+                float(np.dot(d, p.velocity / (np.linalg.norm(p.velocity) + 1e-6)))
+                for p in blockers
+            )
+
+        return left if dot_score(left) < dot_score(right) else right
+
+    def _scan_sectors(self, forward: np.ndarray, nearby: list) -> np.ndarray:
+        """左・中・右の3セクターの重み付きカウントを返す"""
+        weights = np.zeros(SECTOR_COUNT)
+        sector_half = SCAN_ANGLE / SECTOR_COUNT
+        sector_centers = [(i - 1) * sector_half for i in range(SECTOR_COUNT)]
+
+        for p in nearby:
+            diff = p.position - self.position
+            dist = np.linalg.norm(diff)
+            if dist < 1e-6 or dist > DECEL_DISTANCE * 2:
+                continue
+
+            angle_to = np.arctan2(diff[1], diff[0]) - np.arctan2(forward[1], forward[0])
+            angle_to = (angle_to + np.pi) % (2 * np.pi) - np.pi
+
+            if abs(angle_to) > SCAN_ANGLE:
+                continue
+
+            dot = float(np.dot(forward, p.velocity / (np.linalg.norm(p.velocity) + 1e-6)))
+            weight = 1.0 / (dist + 1e-3) * (1.0 - dot * 0.5)
+
+            for i, center in enumerate(sector_centers):
+                if abs(angle_to - center) <= sector_half:
+                    weights[i] += weight
+                    break
+
+        return weights
+
+    def _collision_speed(self, nearby: list, direction: np.ndarray) -> float:
+        """前方の最近接距離に基づく目標速度を返す。
+        base_speed 基準にすることで compound deceleration（速度が 0 に収束する問題）を防ぐ。
+        実際の重なり（min_dist < 0）のみ 0 を返す。"""
+        min_dist = float('inf')
+        for p in nearby:
+            diff = p.position - self.position
+            dist_len = np.linalg.norm(diff)
+            if dist_len < 1e-6:
+                continue
+            # 前方 45° 以内のみ対象
+            if np.dot(diff / dist_len, direction) <= np.cos(SCAN_ANGLE):
+                continue
+            dist = dist_len - self.radius - p.radius
+            if dist < min_dist:
+                min_dist = dist
+
+        if min_dist < 0:
+            return 0.0                           # 実接触 → 停止
+        if min_dist < self.radius * 2:
+            return self.base_speed * 0.3         # 近接 → 30% に抑える
+        if min_dist < DECEL_DISTANCE:
+            ratio = min_dist / DECEL_DISTANCE
+            return self.base_speed * (0.3 + 0.7 * ratio)
+
+        return self.base_speed
