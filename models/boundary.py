@@ -57,6 +57,12 @@ class Boundary:
         t = np.clip(t, 0.0, self.length)
         return self.origin + self.direction * t
 
+    def nearest_endpoint(self, point: np.ndarray) -> np.ndarray:
+        """境界線の両端点のうち point に近い方を返す"""
+        d_origin = np.linalg.norm(point - self.origin)
+        d_end    = np.linalg.norm(point - self.end_point)
+        return self.origin.copy() if d_origin <= d_end else self.end_point.copy()
+
     def goal_direction(self, position: np.ndarray) -> np.ndarray:
         """境界線へ向かう最短方向の単位ベクトル"""
         closest = self.closest_point_on_line(position)
