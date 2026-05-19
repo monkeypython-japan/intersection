@@ -11,16 +11,18 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Intersection Simulator")
-        self.resizable(False, False)
+        self.resizable(True, True)
+        self.minsize(400, 450)
 
         self._intersection = Intersection()
         self._running = False
         self._after_id = None
         self._elapsed = 0.0
+        self._show_fans = tk.BooleanVar(value=False)
 
         self._build_controls()
-        self._canvas = SimCanvas(self, self._intersection)
-        self._canvas.pack(padx=10, pady=(0, 10))
+        self._canvas = SimCanvas(self, self._intersection, self._show_fans)
+        self._canvas.pack(padx=10, pady=(0, 10), fill="both", expand=True)
 
     def _build_controls(self) -> None:
         frame = ttk.Frame(self)
@@ -44,6 +46,11 @@ class App(tk.Tk):
         self._start_btn.pack(side="left", padx=(0, 4))
         self._stop_btn = ttk.Button(frame, text="中断", command=self._on_interrupt, state="disabled")
         self._stop_btn.pack(side="left")
+
+        ttk.Checkbutton(
+            frame, text="扇形表示", variable=self._show_fans,
+            command=lambda: self._canvas.redraw(self._elapsed)
+        ).pack(side="left", padx=(12, 0))
 
         self._status = ttk.Label(frame, text="")
         self._status.pack(side="left", padx=12)
