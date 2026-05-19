@@ -9,14 +9,17 @@ class Crowd:
         self.goal_line = goal_line
         self.pedestrians: list[Pedestrian] = []
 
-    def initialize(self, count: int) -> None:
+    def initialize(self, count: int, goal_align_weight: float = 2.0) -> None:
         self.pedestrians = []
         # 開始線の中心からみたゴール線の接近側（符号）を求める
         start_center = self.start_line.origin + self.start_line.direction * (self.start_line.length / 2)
         approach_side = self.goal_line.side_of(start_center)
         positions = self._generate_positions(count)
         for pos in positions:
-            self.pedestrians.append(Pedestrian(pos, self.goal_line, approach_side))
+            self.pedestrians.append(
+                Pedestrian(pos, self.goal_line, approach_side,
+                           goal_align_weight=goal_align_weight)
+            )
 
     def _generate_positions(self, count: int) -> list[np.ndarray]:
         """開始線のゴール線と逆側に、重ならないよう歩行者を配置"""

@@ -18,9 +18,10 @@ class App(tk.Tk):
         self._running = False
         self._after_id = None
         self._elapsed = 0.0
-        self._show_fans   = tk.BooleanVar(value=False)
-        self._scramble    = tk.BooleanVar(value=False)
-        self._line_length = tk.IntVar(value=20)
+        self._show_fans    = tk.BooleanVar(value=False)
+        self._scramble     = tk.BooleanVar(value=False)
+        self._line_length  = tk.IntVar(value=20)
+        self._goal_weight  = tk.IntVar(value=2)   # ゴール強度 0〜5
 
         self._build_controls()
         self._canvas = SimCanvas(self, self._intersection, self._show_fans)
@@ -55,6 +56,18 @@ class App(tk.Tk):
         self._line_label = ttk.Label(row1, text="20", width=3)
         self._line_label.pack(side="left")
 
+        ttk.Label(row1, text="ゴール強度:").pack(side="left", padx=(12, 0))
+        self._goal_slider = ttk.Scale(
+            row1, from_=0, to=5, orient="horizontal",
+            variable=self._goal_weight, length=100,
+            command=lambda _: self._goal_label.config(
+                text=str(self._goal_weight.get())
+            )
+        )
+        self._goal_slider.pack(side="left", padx=6)
+        self._goal_label = ttk.Label(row1, text="2", width=2)
+        self._goal_label.pack(side="left")
+
         ttk.Button(row1, text="設定", command=self._on_setup).pack(side="left", padx=(16, 4))
         self._start_btn = ttk.Button(row1, text="開始", command=self._on_start, state="disabled")
         self._start_btn.pack(side="left", padx=(0, 4))
@@ -81,7 +94,8 @@ class App(tk.Tk):
         self._canvas._time_red = False
         count = self._ped_count.get()
         self._intersection.setup(count, scramble=self._scramble.get(),
-                                  line_length=self._line_length.get())
+                                  line_length=self._line_length.get(),
+                                  goal_align_weight=float(self._goal_weight.get()))
         self._canvas.redraw(self._elapsed)
         self._start_btn.config(state="normal")
         self._stop_btn.config(state="disabled")
@@ -95,6 +109,7 @@ class App(tk.Tk):
         self._stop_btn.config(state="normal")
         self._slider.config(state="disabled")
         self._line_slider.config(state="disabled")
+        self._goal_slider.config(state="disabled")
         self._status.config(text="")
         self._loop()
 
@@ -119,6 +134,7 @@ class App(tk.Tk):
             self._status.config(text="完了")
             self._slider.config(state="normal")
             self._line_slider.config(state="normal")
+            self._goal_slider.config(state="normal")
             return
         self._after_id = self.after(INTERVAL_MS, self._loop)
 
@@ -130,3 +146,4 @@ class App(tk.Tk):
         self._stop_btn.config(state="disabled")
         self._slider.config(state="normal")
         self._line_slider.config(state="normal")
+        self._goal_slider.config(state="normal")

@@ -30,23 +30,23 @@ class Intersection:
         self._setup_done = False
 
     def setup(self, pedestrian_count: int, scramble: bool = False,
-              line_length: float = 20.0) -> None:
+              line_length: float = 20.0, goal_align_weight: float = 2.0) -> None:
         boundary_defs = _make_boundaries(line_length, scramble)
         self.boundaries = [Boundary(**b) for b in boundary_defs]
 
         b_h_left, b_h_right = self.boundaries[0], self.boundaries[1]
         crowd1 = Crowd(start_line=b_h_left,  goal_line=b_h_right)
         crowd2 = Crowd(start_line=b_h_right, goal_line=b_h_left)
-        crowd1.initialize(pedestrian_count)
-        crowd2.initialize(pedestrian_count)
+        crowd1.initialize(pedestrian_count, goal_align_weight=goal_align_weight)
+        crowd2.initialize(pedestrian_count, goal_align_weight=goal_align_weight)
         self.crowds = [crowd1, crowd2]
 
         if scramble:
             b_v_bottom, b_v_top = self.boundaries[2], self.boundaries[3]
             crowd3 = Crowd(start_line=b_v_bottom, goal_line=b_v_top)
             crowd4 = Crowd(start_line=b_v_top,    goal_line=b_v_bottom)
-            crowd3.initialize(pedestrian_count)
-            crowd4.initialize(pedestrian_count)
+            crowd3.initialize(pedestrian_count, goal_align_weight=goal_align_weight)
+            crowd4.initialize(pedestrian_count, goal_align_weight=goal_align_weight)
             self.crowds.extend([crowd3, crowd4])
 
         self._setup_done = True
